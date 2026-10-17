@@ -41,6 +41,11 @@ jobs:
           "
           ls -la space-sdk.tgz
 
+      - name: Apply New Logo
+        run: |
+          cp bolo-logo-new.jpg client/src/assets/bolo-logo.jpg
+          ls -la client/src/assets/bolo-logo.jpg
+
       - name: Install Bun
         uses: oven-sh/setup-bun@v1
 
@@ -97,6 +102,24 @@ jobs:
               print('permissions already present')
           PYEOF
           grep "uses-permission" android/app/src/main/AndroidManifest.xml
+
+      - name: Set App Launcher Icon
+        run: |
+          pip install pillow -q
+          python3 - <<'PYEOF'
+          from PIL import Image
+          import os
+          src = Image.open('bolo-logo-new.jpg').convert('RGBA')
+          sizes = {'mipmap-mdpi':48, 'mipmap-hdpi':72, 'mipmap-xhdpi':96, 'mipmap-xxhdpi':144, 'mipmap-xxxhdpi':192}
+          for d, size in sizes.items():
+              path = f'android/app/src/main/res/{d}'
+              os.makedirs(path, exist_ok=True)
+              icon = src.resize((size, size), Image.LANCZOS)
+              icon.save(f'{path}/ic_launcher.png')
+              icon.save(f'{path}/ic_launcher_round.png')
+              icon.save(f'{path}/ic_launcher_foreground.png')
+          print('launcher icons set from new logo')
+          PYEOF
 
       - name: Build Debug APK
         run: |
