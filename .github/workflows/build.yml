@@ -45,8 +45,8 @@ jobs:
 
       - name: Apply New Logo
         run: |
-          cp bolo-logo-new.jpg client/src/assets/bolo-logo.jpg
-          ls -la client/src/assets/bolo-logo.jpg
+          cp easy-chat-logo-new.png client/src/assets/easy-chat-logo.png
+          ls -la client/src/assets/easy-chat-logo.png
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v1
@@ -83,7 +83,7 @@ jobs:
       - name: Setup Capacitor
         run: |
           bun add @capacitor/core @capacitor/cli @capacitor/android
-          bun x cap init "Bolo Chat" "com.bolochat.app" --web-dir client/dist
+          bun x cap init "Easy Chat" "com.bolochat.app" --web-dir client/dist
           bun x cap add android
           bun x cap sync android
 
@@ -116,7 +116,7 @@ jobs:
           python3 - <<'PYEOF'
           from PIL import Image
           import os
-          src = Image.open('bolo-logo-new.jpg').convert('RGBA')
+          src = Image.open('easy-chat-logo-new.png').convert('RGBA')
           sizes = {'mipmap-mdpi':48, 'mipmap-hdpi':72, 'mipmap-xhdpi':96, 'mipmap-xxhdpi':144, 'mipmap-xxxhdpi':192}
           for d, size in sizes.items():
               path = f'android/app/src/main/res/{d}'
@@ -168,6 +168,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "v1.0.${{ github.run_number }}" \
-            --title "Bolo Chat v1.0.${{ github.run_number }}" \
+            --title "Easy Chat v1.0.${{ github.run_number }}" \
             --notes "Bolo Chat APK" \
             android/app/build/outputs/apk/debug/app-debug.apk
