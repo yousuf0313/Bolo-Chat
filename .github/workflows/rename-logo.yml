@@ -1,0 +1,17 @@
+name: Rename logo file
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  rename:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rename logo file
+        run: |
+          git config user.name "yousuf0313"
+          git config user.email "yousuf0313@users.noreply.github.com"
+          git mv easy-chat-logo-circle.png easy-chat-logo-new.png
+          git commit -m "Rename easy-chat-logo-circle.png to easy-chat-logo-new.png"
+          git push
