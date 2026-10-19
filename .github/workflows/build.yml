@@ -28,7 +28,7 @@ jobs:
 
       - name: Extract Project Files
         run: |
-          unzip -o "Bolo Chat Source.zip" || unzip -o "*.zip"
+          for f in *.zip; do echo "Trying $f"; unzip -o "$f" && break; done
           rm -f bun.lock package-lock.json
           ls
 
