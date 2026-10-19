@@ -72,9 +72,9 @@ jobs:
           VITEOF
           cat client/vite.config.ts
 
-      - name: Inject App Versio
+      - name: Inject App Version
         run: |
-          sed -i -E 's/(APP_VERSION *= *")[^"]*(")/\1'"1.0.${GITHUB_RUN_NUMBER}"''\2/' client/src/appVersion.ts || \
+          sed -i -E 's/(APP_VERSION *= *")[^"]*(")/\1'"1.0.${GITHUB_RUN_NUMBER}"'\2/' client/src/appVersion.ts || \
           echo "export const APP_VERSION = \"1.0.${GITHUB_RUN_NUMBER}\";" > client/src/appVersion.ts
           grep APP_VERSION client/src/appVersion.ts
 
