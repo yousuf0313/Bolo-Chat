@@ -28,7 +28,7 @@ jobs:
 
       - name: Extract Project Files
         run: |
-          cat Bolo-Chat-part-* > combined.zip 2>/dev/null && unzip -o combined.zip || for f in *.zip; do echo "Trying $f"; unzip -o "$f" && break; done
+          (cat Easy-Chat-part-* > combined.zip 2>/dev/null || cat Bolo-Chat-part-* > combined.zip 2>/dev/null) && unzip -o combined.zip || for f in *.zip; do echo "Trying $f"; unzip -o "$f" && break; done
           rm -f bun.lock package-lock.json
           ls
 
@@ -74,8 +74,9 @@ jobs:
 
       - name: Inject App Version
         run: |
-          echo "export const APP_VERSION = \"1.0.${GITHUB_RUN_NUMBER}\";" > client/src/appVersion.ts
-          cat client/src/appVersion.ts
+          sed -i -E 's/(APP_VERSION *= *")[^"]*(")/\1'"1.0.${GITHUB_RUN_NUMBER}"'\2/' client/src/appVersion.ts || \
+            echo "export const APP_VERSION = \"1.0.${GITHUB_RUN_NUMBER}\";" > client/src/appVersion.ts
+          grep APP_VERSION client/src/appVersion.ts
 
       - name: Build Web Assets
         run: bun x vite build --config client/vite.config.ts
@@ -86,6 +87,12 @@ jobs:
           bun x cap init "Easy Chat" "com.bolochat.app" --web-dir client/dist
           bun x cap add android
           bun x cap sync android
+
+      - name: Set Native Android Version
+        run: |
+          sed -i -E 's/(versionCode )[0-9]+/\1'"${GITHUB_RUN_NUMBER}"'/' android/app/build.gradle
+          sed -i -E 's/(versionName )"[^"]*"/\1"1.0.'"${GITHUB_RUN_NUMBER}"'"/' android/app/build.gradle
+          grep -E "versionCode|versionName" android/app/build.gradle | head -4
 
       - name: Add Android Permissions
         run: |
@@ -157,10 +164,23 @@ jobs:
           echo "APK signature check:"
           keytool -printcert -jarfile android/app/build/outputs/apk/debug/app-debug.apk 2>/dev/null | grep -E "SHA256|Owner" | head -4 || echo "keytool jarfile check not available"
 
+      - name: Verify Native Version
+        run: |
+          AAPT=$(find "$ANDROID_HOME" "$HOME/Android" /opt/android* /usr/local -name aapt 2>/dev/null | head -1)
+          if [ -z "$AAPT" ]; then echo "aapt not found"; exit 1; fi
+          INFO=$($AAPT dump badging android/app/build/outputs/apk/debug/app-debug.apk | head -1)
+          echo "$INFO"
+          CODE=$(echo "$INFO" | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p")
+          VNAME=$(echo "$INFO" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")
+          echo "versionCode=$CODE versionName=$VNAME expected run=${{ github.run_number }}"
+          [ "$CODE" = "${{ github.run_number }}" ] || { echo "FATAL: versionCode mismatch"; exit 1; }
+          [ "$VNAME" = "1.0.${{ github.run_number }}" ] || { echo "FATAL: versionName mismatch"; exit 1; }
+          echo "version check passed"
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: bolo-chat-apk
+          name: easy-chat-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
 
       - name: Create GitHub Release
@@ -169,5 +189,5 @@ jobs:
         run: |
           gh release create "v1.0.${{ github.run_number }}" \
             --title "Easy Chat v1.0.${{ github.run_number }}" \
-            --notes "Bolo Chat APK" \
+            --notes "Easy Chat APK" \
             android/app/build/outputs/apk/debug/app-debug.apk
