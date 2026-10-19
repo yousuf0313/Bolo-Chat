@@ -72,10 +72,10 @@ jobs:
           VITEOF
           cat client/vite.config.ts
 
-      - name: Inject App Version
+      - name: Inject App Versio
         run: |
-          sed -i -E 's/(APP_VERSION *= *")[^"]*(")/\1'"1.0.${GITHUB_RUN_NUMBER}"'\2/' client/src/appVersion.ts || \
-            echo "export const APP_VERSION = \"1.0.${GITHUB_RUN_NUMBER}\";" > client/src/appVersion.ts
+          sed -i -E 's/(APP_VERSION *= *")[^"]*(")/\1'"1.0.${GITHUB_RUN_NUMBER}"''\2/' client/src/appVersion.ts || \
+          echo "export const APP_VERSION = \"1.0.${GITHUB_RUN_NUMBER}\";" > client/src/appVersion.ts
           grep APP_VERSION client/src/appVersion.ts
 
       - name: Build Web Assets
@@ -93,6 +93,37 @@ jobs:
           sed -i -E 's/(versionCode )[0-9]+/\1'"${GITHUB_RUN_NUMBER}"'/' android/app/build.gradle
           sed -i -E 's/(versionName )"[^"]*"/\1"1.0.'"${GITHUB_RUN_NUMBER}"'"/' android/app/build.gradle
           grep -E "versionCode|versionName" android/app/build.gradle | head -4
+
+      - name: Configure Stable Signing
+        run: |
+          python3 - <<'PYEOF'
+          import re
+          p = 'android/app/build.gradle'
+          s = open(p).read()
+          if 'signingConfigs' not in s:
+              s2, n = re.subn(r'(?m)^(android \{\s*)$',
+                  '\\1\n    signingConfigs {\n        debug {\n            storeFile file(System.getenv("GITHUB_WORKSPACE") + "/debug.keystore")\n            storePassword "android"\n            keyAlias "androiddebugkey"\n            keyPassword "android"\n        }\n    }',
+                  s, count=1)
+              if n == 1:
+                  s = s2
+                  print('signingConfigs inserted')
+              m = re.search(r'buildTypes\s*\{', s)
+              if m:
+                  rest = s[m.end():]
+                  dm = re.search(r'debug\s*\{', rest)
+                  if dm:
+                      pos = m.end() + dm.end()
+                      s = s[:pos] + '\n            signingConfig signingConfigs.debug' + s[pos:]
+                      print('debug buildType wired')
+                  else:
+                      pos = m.end()
+                      s = s[:pos] + '\n        debug {\n            signingConfig signingConfigs.debug\n        }' + s[pos:]
+                      print('debug buildType created')
+              open(p, 'w').write(s)
+          else:
+              print('signing already configured')
+          PYEOF
+          grep -B1 -A8 "signingConfigs" android/app/build.gradle | head -20
 
       - name: Add Android Permissions
         run: |
@@ -157,12 +188,21 @@ jobs:
           keytool -list -v -keystore debug.keystore -storepass android 2>/dev/null | grep -E "SHA256|Alias"
 
       - name: Build Debug APK
-        run: |
-          cd android
-          chmod +x gradlew
-          ./gradlew assembleDebug
-          echo "APK signature check:"
-          keytool -printcert -jarfile android/app/build/outputs/apk/debug/app-debug.apk 2>/dev/null | grep -E "SHA256|Owner" | head -4 || echo "keytool jarfile check not available"
+          run: |
+            cd android
+            chmod +x gradlew
+            ./gradlew assembleDebug
+            cd "$GITHUB_WORKSPACE"
+            echo "APK signature check:"
+            APKSIGNER=$(find "$ANDROID_HOME" "$HOME/Android" /opt/android* /usr/local -name apksigner 2>/dev/null | head -1)
+            if [ -z "$APKSIGNER" ]; then echo "apksigner not found"; exit 1; fi
+            "$APKSIGNER" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk | grep -E "SHA-256|certificate DN"
+            ACTUAL=$("$APKSIGNER" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk | grep "SHA-256" | head -1 | sed 's/.*digest: //' | tr -d ':' | tr 'a-z' 'A-Z')
+            EXPECTED=$(keytool -list -v -keystore debug.keystore -storepass android 2>/dev/null | grep "SHA256" | head -1 | sed 's/.*SHA256: //' | tr -d ':' | tr 'a-z' 'A-Z')
+            echo "APK cert: $ACTUAL"
+            echo "Keystore: $EXPECTED"
+            [ -n "$ACTUAL" ] && [ "$ACTUAL" = "$EXPECTED" ] || { echo "FATAL: APK signature does not match committed keystore"; exit 1; }
+            echo "signature check passed"
 
       - name: Verify Native Version
         run: |
