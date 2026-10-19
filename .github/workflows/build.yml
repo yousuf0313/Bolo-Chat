@@ -28,7 +28,7 @@ jobs:
 
       - name: Extract Project Files
         run: |
-          for f in *.zip; do echo "Trying $f"; unzip -o "$f" && break; done
+          cat Bolo-Chat-part-* > combined.zip 2>/dev/null && unzip -o combined.zip || for f in *.zip; do echo "Trying $f"; unzip -o "$f" && break; done
           rm -f bun.lock package-lock.json
           ls
 
