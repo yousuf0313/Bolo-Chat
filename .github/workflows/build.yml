@@ -188,21 +188,21 @@ jobs:
           keytool -list -v -keystore debug.keystore -storepass android 2>/dev/null | grep -E "SHA256|Alias"
 
       - name: Build Debug APK
-      run: |
-        cd android
-        chmod +x gradlew
-        ./gradlew assembleDebug
-        cd "$GITHUB_WORKSPACE"
-        echo "APK signature check:"
-        APKSIGNER=$(find "$ANDROID_HOME" "$HOME/Android" /opt/android* /usr/local -name apksigner 2>/dev/null | head -1)
-        if [ -z "$APKSIGNER" ]; then echo "apksigner not found"; exit 1; fi
-        "$APKSIGNER" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk | grep -E "SHA-256|certificate DN"
-        ACTUAL=$("$APKSIGNER" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk | grep "SHA-256" | head -1 | sed 's/.*digest: //' | tr -d ':' | tr 'a-z' 'A-Z')
-        EXPECTED=$(keytool -list -v -keystore debug.keystore -storepass android 2>/dev/null | grep "SHA256" | head -1 | sed 's/.*SHA256: //' | tr -d ':' | tr 'a-z' 'A-Z')
-        echo "APK cert: $ACTUAL"
-        echo "Keystore: $EXPECTED"
-        [ -n "$ACTUAL" ] && [ "$ACTUAL" = "$EXPECTED" ] || { echo "FATAL: APK signature does not match committed keystore"; exit 1; }
-        echo "signature check passed"
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+          cd "$GITHUB_WORKSPACE"
+          echo "APK signature check:"
+          APKSIGNER=$(find "$ANDROID_HOME" "$HOME/Android" /opt/android* /usr/local -name apksigner 2>/dev/null | head -1)
+          if [ -z "$APKSIGNER" ]; then echo "apksigner not found"; exit 1; fi
+          "$APKSIGNER" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk | grep -E "SHA-256|certificate DN"
+          ACTUAL=$("$APKSIGNER" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk | grep "SHA-256" | head -1 | sed 's/.*digest: //' | tr -d ':' | tr 'a-z' 'A-Z')
+          EXPECTED=$(keytool -list -v -keystore debug.keystore -storepass android 2>/dev/null | grep "SHA256" | head -1 | sed 's/.*SHA256: //' | tr -d ':' | tr 'a-z' 'A-Z')
+          echo "APK cert: $ACTUAL"
+          echo "Keystore: $EXPECTED"
+          [ -n "$ACTUAL" ] && [ "$ACTUAL" = "$EXPECTED" ] || { echo "FATAL: APK signature does not match committed keystore"; exit 1; }
+          echo "signature check passed"
 
       - name: Verify Native Version
         run: |
