@@ -1,0 +1,251 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - name: Extract Project Files
+        run: |
+          (cat Easy-Chat-part-* > combined.zip 2>/dev/null || cat Bolo-Chat-part-* > combined.zip 2>/dev/null) && unzip -o combined.zip || for f in *.zip; do echo "Trying $f"; unzip -o "$f" && break; done
+          rm -f bun.lock package-lock.json
+          ls
+
+      - name: Point SDK at repo tarball
+        run: |
+          python3 -c "
+          import json
+          p = json.load(open('package.json'))
+          p['dependencies']['@hatch/space-sdk'] = 'file:./space-sdk.tgz'
+          json.dump(p, open('package.json', 'w'), indent=2)
+          print('sdk path:', p['dependencies']['@hatch/space-sdk'])
+          "
+          ls -la space-sdk.tgz
+
+      - name: Apply New Logo
+        run: |
+          cp easy-chat-logo-new.png client/src/assets/easy-chat-logo.png
+          ls -la client/src/assets/easy-chat-logo.png
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v1
+
+      - name: Install Dependencies
+        run: bun install
+
+      - name: Add web build tools
+        run: bun add -d vite @vitejs/plugin-react @tailwindcss/vite
+
+      - name: Write Vite config
+        run: |
+          cat > client/vite.config.ts <<'VITEOF'
+          import { defineConfig } from "vite";
+          import react from "@vitejs/plugin-react";
+          import tailwindcss from "@tailwindcss/vite";
+
+          export default defineConfig({
+            plugins: [react(), tailwindcss()],
+            root: "client",
+            build: { outDir: "dist", emptyOutDir: true },
+          });
+          VITEOF
+          cat client/vite.config.ts
+
+      - name: Inject App Version
+        run: |
+          sed -i -E 's/(APP_VERSION *= *")[^"]*(")/\1'"1.0.${GITHUB_RUN_NUMBER}"'\2/' client/src/appVersion.ts || \
+          echo "export const APP_VERSION = \"1.0.${GITHUB_RUN_NUMBER}\";" > client/src/appVersion.ts
+          grep APP_VERSION client/src/appVersion.ts
+
+      - name: Build Web Assets
+        run: bun x vite build --config client/vite.config.ts
+
+      - name: Setup Capacitor
+        run: |
+          bun add @capacitor/core @capacitor/cli @capacitor/android
+          bun x cap init "Easy Chat" "com.bolochat.app" --web-dir client/dist
+          bun x cap add android
+          bun x cap sync android
+
+      - name: Inject WhatsApp Mirror Native Code
+        run: |
+          mkdir -p android/app/src/main/java/com/bolochat/app
+          cp native/WhatsAppMirrorPlugin.java native/WaNotificationListener.java native/WaReplyStore.java native/MainActivity.java android/app/src/main/java/com/bolochat/app/
+          ls android/app/src/main/java/com/bolochat/app/
+          python3 - <<'PYEOF'
+          p = 'android/app/src/main/AndroidManifest.xml'
+          s = open(p).read()
+          service = '\n        <service android:name=".WaNotificationListener" android:label="Easy Chat" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" android:exported="true">\n            <intent-filter>\n                <action android:name="android.service.notification.NotificationListenerService" />\n            </intent-filter>\n        </service>\n    '
+          if 'WaNotificationListener' not in s:
+              s = s.replace('</application>', service + '</application>')
+              open(p, 'w').write(s)
+              print('manifest service added')
+          else:
+              print('service already present')
+          PYEOF
+          grep -A4 "WaNotificationListener" android/app/src/main/AndroidManifest.xml
+
+      - name: Set Native Android Version
+        run: |
+          sed -i -E 's/(versionCode )[0-9]+/\1'"${GITHUB_RUN_NUMBER}"'/' android/app/build.gradle
+          sed -i -E 's/(versionName )"[^"]*"/\1"1.0.'"${GITHUB_RUN_NUMBER}"'"/' android/app/build.gradle
+          grep -E "versionCode|versionName" android/app/build.gradle | head -4
+
+      - name: Configure Stable Signing
+        run: |
+          python3 - <<'PYEOF'
+          import re
+          p = 'android/app/build.gradle'
+          s = open(p).read()
+          if 'signingConfigs' not in s:
+              s2, n = re.subn(r'(?m)^(android \{\s*)$',
+                  '\\1\n    signingConfigs {\n        debug {\n            storeFile file(System.getenv("GITHUB_WORKSPACE") + "/debug.keystore")\n            storePassword "android"\n            keyAlias "androiddebugkey"\n            keyPassword "android"\n        }\n    }',
+                  s, count=1)
+              if n == 1:
+                  s = s2
+                  print('signingConfigs inserted')
+              m = re.search(r'buildTypes\s*\{', s)
+              if m:
+                  rest = s[m.end():]
+                  dm = re.search(r'debug\s*\{', rest)
+                  if dm:
+                      pos = m.end() + dm.end()
+                      s = s[:pos] + '\n            signingConfig signingConfigs.debug' + s[pos:]
+                      print('debug buildType wired')
+                  else:
+                      pos = m.end()
+                      s = s[:pos] + '\n        debug {\n            signingConfig signingConfigs.debug\n        }' + s[pos:]
+                      print('debug buildType created')
+              open(p, 'w').write(s)
+          else:
+              print('signing already configured')
+          PYEOF
+          grep -B1 -A8 "signingConfigs" android/app/build.gradle | head -20
+
+      - name: Add Android Permissions
+        run: |
+          python3 - <<'PYEOF'
+          import re
+          p = 'android/app/src/main/AndroidManifest.xml'
+          s = open(p).read()
+          insert = (
+              '\n'
+              '    <uses-permission android:name="android.permission.RECORD_AUDIO" />\n'
+              '    <uses-permission android:name="android.permission.CAMERA" />\n'
+              '    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n'
+              '    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />\n'
+              '    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n'
+          )
+          if 'android.permission.RECORD_AUDIO' not in s:
+              s = re.sub(r'(<manifest[^>]*>)', lambda m: m.group(1) + insert, s, count=1)
+              open(p, 'w').write(s)
+              print('permissions added')
+          else:
+              print('permissions already present')
+          PYEOF
+          grep "uses-permission" android/app/src/main/AndroidManifest.xml
+
+      - name: Set App Launcher Icon
+        run: |
+          pip install pillow -q
+          python3 - <<'PYEOF'
+          from PIL import Image
+          import os
+          src = Image.open('easy-chat-logo-new.png').convert('RGBA')
+          sizes = {'mipmap-mdpi':48, 'mipmap-hdpi':72, 'mipmap-xhdpi':96, 'mipmap-xxhdpi':144, 'mipmap-xxxhdpi':192}
+          for d, size in sizes.items():
+              path = f'android/app/src/main/res/{d}'
+              os.makedirs(path, exist_ok=True)
+              icon = src.resize((size, size), Image.LANCZOS)
+              icon.save(f'{path}/ic_launcher.png')
+              icon.save(f'{path}/ic_launcher_round.png')
+              icon.save(f'{path}/ic_launcher_foreground.png')
+          print('launcher icons set from new logo')
+          PYEOF
+
+      - name: Ensure Stable Debug Keystore
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ ! -f debug.keystore ]; then
+            echo "debug.keystore not found, generating a new one..."
+            keytool -genkey -v -keystore debug.keystore -alias androiddebugkey -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add debug.keystore
+            git commit -m "Add stable debug keystore for consistent APK signing"
+            git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+            git push origin HEAD:main
+          else
+            echo "debug.keystore already exists, skipping generation"
+          fi
+          mkdir -p ~/.android
+          cp debug.keystore ~/.android/debug.keystore
+          echo "Keystore SHA256:"
+          keytool -list -v -keystore debug.keystore -storepass android 2>/dev/null | grep -E "SHA256|Alias"
+
+      - name: Build Debug APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+          cd "$GITHUB_WORKSPACE"
+          echo "APK signature check:"
+          APKSIGNER=$(find "$ANDROID_HOME" "$HOME/Android" /opt/android* /usr/local -name apksigner 2>/dev/null | head -1)
+          if [ -z "$APKSIGNER" ]; then echo "apksigner not found"; exit 1; fi
+          "$APKSIGNER" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk | grep -E "SHA-256|certificate DN"
+          ACTUAL=$("$APKSIGNER" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk | grep "SHA-256" | head -1 | sed 's/.*digest: //' | tr -d ':' | tr 'a-z' 'A-Z')
+          EXPECTED=$(keytool -list -v -keystore debug.keystore -storepass android 2>/dev/null | grep "SHA256" | head -1 | sed 's/.*SHA256: //' | tr -d ':' | tr 'a-z' 'A-Z')
+          echo "APK cert: $ACTUAL"
+          echo "Keystore: $EXPECTED"
+          [ -n "$ACTUAL" ] && [ "$ACTUAL" = "$EXPECTED" ] || { echo "FATAL: APK signature does not match committed keystore"; exit 1; }
+          echo "signature check passed"
+
+      - name: Verify Native Version
+        run: |
+          AAPT=$(find "$ANDROID_HOME" "$HOME/Android" /opt/android* /usr/local -name aapt 2>/dev/null | head -1)
+          if [ -z "$AAPT" ]; then echo "aapt not found"; exit 1; fi
+          INFO=$($AAPT dump badging android/app/build/outputs/apk/debug/app-debug.apk | head -1)
+          echo "$INFO"
+          CODE=$(echo "$INFO" | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p")
+          VNAME=$(echo "$INFO" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")
+          echo "versionCode=$CODE versionName=$VNAME expected run=${{ github.run_number }}"
+          [ "$CODE" = "${{ github.run_number }}" ] || { echo "FATAL: versionCode mismatch"; exit 1; }
+          [ "$VNAME" = "1.0.${{ github.run_number }}" ] || { echo "FATAL: versionName mismatch"; exit 1; }
+          echo "version check passed"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: easy-chat-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v1.0.${{ github.run_number }}" \
+            --title "Easy Chat v1.0.${{ github.run_number }}" \
+            --notes "Easy Chat APK" \
+            android/app/build/outputs/apk/debug/app-debug.apk
