@@ -88,24 +88,6 @@ jobs:
           bun x cap add android
           bun x cap sync android
 
-      - name: Inject WhatsApp Mirror Native Code
-        run: |
-          mkdir -p android/app/src/main/java/com/bolochat/app
-          cp native/WhatsAppMirrorPlugin.java native/WaNotificationListener.java native/WaReplyStore.java native/MainActivity.java android/app/src/main/java/com/bolochat/app/
-          ls android/app/src/main/java/com/bolochat/app/
-          python3 - <<'PYEOF'
-          p = 'android/app/src/main/AndroidManifest.xml'
-          s = open(p).read()
-          service = '\n        <service android:name=".WaNotificationListener" android:label="Easy Chat" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" android:exported="true">\n            <intent-filter>\n                <action android:name="android.service.notification.NotificationListenerService" />\n            </intent-filter>\n        </service>\n    '
-          if 'WaNotificationListener' not in s:
-              s = s.replace('</application>', service + '</application>')
-              open(p, 'w').write(s)
-              print('manifest service added')
-          else:
-              print('service already present')
-          PYEOF
-          grep -A4 "WaNotificationListener" android/app/src/main/AndroidManifest.xml
-
       - name: Set Native Android Version
         run: |
           sed -i -E 's/(versionCode )[0-9]+/\1'"${GITHUB_RUN_NUMBER}"'/' android/app/build.gradle
