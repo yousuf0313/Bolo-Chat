@@ -100,6 +100,12 @@ jobs:
           import re
           p = 'android/app/build.gradle'
           s = open(p).read()
+          debug_extra = (
+              '\n            signingConfig signingConfigs.debug'
+              '\n            minifyEnabled true'
+              '\n            shrinkResources true'
+              '\n            proguardFiles getDefaultProguardFile(\'proguard-android-optimize.txt\'), \'proguard-rules.pro\''
+          )
           if 'signingConfigs' not in s:
               s2, n = re.subn(r'(?m)^(android \{\s*)$',
                   '\\1\n    signingConfigs {\n        debug {\n            storeFile file(System.getenv("GITHUB_WORKSPACE") + "/debug.keystore")\n            storePassword "android"\n            keyAlias "androiddebugkey"\n            keyPassword "android"\n        }\n    }',
@@ -113,11 +119,11 @@ jobs:
                   dm = re.search(r'debug\s*\{', rest)
                   if dm:
                       pos = m.end() + dm.end()
-                      s = s[:pos] + '\n            signingConfig signingConfigs.debug' + s[pos:]
+                      s = s[:pos] + debug_extra + s[pos:]
                       print('debug buildType wired')
                   else:
                       pos = m.end()
-                      s = s[:pos] + '\n        debug {\n            signingConfig signingConfigs.debug\n        }' + s[pos:]
+                      s = s[:pos] + '\n        debug {' + debug_extra + '\n        }' + s[pos:]
                       print('debug buildType created')
               open(p, 'w').write(s)
           else:
@@ -131,6 +137,7 @@ jobs:
           import re
           p = 'android/app/src/main/AndroidManifest.xml'
           s = open(p).read()
+          changed = False
           insert = (
               '\n'
               '    <uses-permission android:name="android.permission.RECORD_AUDIO" />\n'
@@ -138,13 +145,22 @@ jobs:
               '    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n'
               '    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />\n'
               '    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n'
+              '    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />\n'
           )
           if 'android.permission.RECORD_AUDIO' not in s:
               s = re.sub(r'(<manifest[^>]*>)', lambda m: m.group(1) + insert, s, count=1)
-              open(p, 'w').write(s)
+              changed = True
               print('permissions added')
           else:
               print('permissions already present')
+          if 'android:usesCleartextTraffic' not in s:
+              s = re.sub(r'(<application\b[^>]*)>', r'\1 android:usesCleartextTraffic="false">', s, count=1)
+              changed = True
+              print('cleartext traffic disabled')
+          else:
+              print('cleartext traffic already configured')
+          if changed:
+              open(p, 'w').write(s)
           PYEOF
           grep "uses-permission" android/app/src/main/AndroidManifest.xml
 
