@@ -74,7 +74,7 @@ jobs:
 
       - name: Inject App Version
         run: |
-          sed -i -E 's/(APP_VERSION *= *")[^"]*(")/\1'"1.0.${GITHUB_RUN_NUMBER}"'\2/' client/src/appVersion.ts || \
+          sed -i -E 's/(APP_VERSION *= *")[^"]*(")/\1'"1.0.${GITHUB_RUN_NUMBER}"\2/' client/src/appVersion.ts || \
           echo "export const APP_VERSION = \"1.0.${GITHUB_RUN_NUMBER}\";" > client/src/appVersion.ts
           grep APP_VERSION client/src/appVersion.ts
 
@@ -171,15 +171,21 @@ jobs:
           from PIL import Image
           import os
           src = Image.open('easy-chat-logo-new.png').convert('RGBA')
+          w, h = src.size
+          bg = src.getpixel((w // 2, int(h * 0.08)))[:3]
           sizes = {'mipmap-mdpi':48, 'mipmap-hdpi':72, 'mipmap-xhdpi':96, 'mipmap-xxhdpi':144, 'mipmap-xxxhdpi':192}
           for d, size in sizes.items():
               path = f'android/app/src/main/res/{d}'
               os.makedirs(path, exist_ok=True)
-              icon = src.resize((size, size), Image.LANCZOS)
-              icon.save(f'{path}/ic_launcher.png')
-              icon.save(f'{path}/ic_launcher_round.png')
-              icon.save(f'{path}/ic_launcher_foreground.png')
-          print('launcher icons set from new logo')
+              canvas = Image.new('RGBA', (size, size), bg + (255,))
+              inner = int(size * 0.80)
+              logo = src.resize((inner, inner), Image.LANCZOS)
+              off = (size - inner) // 2
+              canvas.paste(logo, (off, off), logo)
+              canvas.save(f'{path}/ic_launcher.png')
+              canvas.save(f'{path}/ic_launcher_round.png')
+              canvas.save(f'{path}/ic_launcher_foreground.png')
+          print('launcher icons set from new logo (fitted with margin)')
           PYEOF
 
       - name: Ensure Stable Debug Keystore
