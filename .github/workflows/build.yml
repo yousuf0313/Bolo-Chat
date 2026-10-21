@@ -111,6 +111,13 @@ jobs:
           print('firebase native config wired')
           PYEOF
 
+      - name: Add R8 Rules For Auth Plugin
+        run: |
+          cat >> android/app/proguard-rules.pro <<'RULESEOF'
+          -dontwarn com.facebook.**
+          RULESEOF
+          cat android/app/proguard-rules.pro
+
       - name: Set Native Android Version
         run: |
           sed -i -E 's/(versionCode )[0-9]+/\1'"${GITHUB_RUN_NUMBER}"'/' android/app/build.gradle
