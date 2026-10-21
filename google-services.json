@@ -14,6 +14,14 @@
       },
       "oauth_client": [
         {
+          "client_id": "635724835065-m195qrq1kam5qt20pjed5r7j0unpk1qg.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.bolochat.app",
+            "certificate_hash": "e5b92aaaf3234b28af5b7f872683eca4b6068420"
+          }
+        },
+        {
           "client_id": "635724835065-81hpeqs1ou8j7rr1lpa1la0lvc89vesl.apps.googleusercontent.com",
           "client_type": 3
         }
