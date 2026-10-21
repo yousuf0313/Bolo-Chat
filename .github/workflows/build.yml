@@ -111,6 +111,20 @@ jobs:
           print('firebase native config wired')
           PYEOF
 
+      - name: Set Firebase Auth Providers
+        run: |
+          python3 - <<'PYEOF'
+          import json
+          p = 'android/app/src/main/assets/capacitor.config.json'
+          with open(p) as f:
+              cfg = json.load(f)
+          plugins = cfg.setdefault('plugins', {})
+          fa = plugins.setdefault('FirebaseAuthentication', {})
+          fa['providers'] = ['google.com']
+          with open(p, 'w') as f:
+              json.dump(cfg, f, indent=2)
+          print('FirebaseAuthentication providers:', fa['providers'])
+          PYEOF
       - name: Add R8 Rules For Auth Plugin
         run: |
           cat >> android/app/proguard-rules.pro <<'RULESEOF'
