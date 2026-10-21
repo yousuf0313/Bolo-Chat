@@ -208,6 +208,44 @@ jobs:
           PYEOF
           grep "uses-permission" android/app/src/main/AndroidManifest.xml
 
+      - name: Declare YS Store Queries In Manifest
+        run: |
+          python3 - <<'PYEOF'
+          import re
+          p = 'android/app/src/main/AndroidManifest.xml'
+          s = open(p, encoding='utf-8').read()
+          if 'android:scheme="ysstore"' in s:
+              print('ysstore intent already present')
+          else:
+              def make_intent(base):
+                  return (base + '<intent>\n'
+                      + base + '    <action android:name="android.intent.action.VIEW" />\n'
+                      + base + '    <data android:scheme="ysstore" />\n'
+                      + base + '</intent>\n')
+              m = re.search(r'^([ \t]*)</queries>', s, flags=re.M)
+              if m:
+                  base = m.group(1) + '    '
+                  s = s[:m.start()] + make_intent(base) + m.group(1) + '</queries>' + s[m.end():]
+                  print('merged ysstore intent into existing queries')
+              else:
+                  m2 = re.search(r'^([ \t]*)</manifest>', s, flags=re.M)
+                  base = m2.group(1) + '    '
+                  block = base + '<queries>\n' + make_intent(base + '    ') + base + '</queries>\n'
+                  s = s[:m2.start()] + block + s[m2.start():]
+                  print('inserted ysstore queries block')
+              open(p, 'w', encoding='utf-8').write(s)
+          PYEOF
+          grep -A6 '<queries' android/app/src/main/AndroidManifest.xml
+
+      - name: Verify YS Store Queries In Manifest
+        run: |
+          QUERIES_SECTION=$(sed -n '/<queries/,/<\/queries>/p' android/app/src/main/AndroidManifest.xml)
+          if ! printf '%s\n' "$QUERIES_SECTION" | grep -q 'android:scheme="ysstore"'; then
+            echo "::error::FAIL: ysstore scheme NOT declared inside <queries> - refusing to ship"
+            exit 1
+          fi
+          echo "Verified: ysstore scheme declared inside <queries>"
+
       - name: Set App Launcher Icon
         run: |
           pip install pillow -q
