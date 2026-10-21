@@ -88,6 +88,29 @@ jobs:
           bun x cap add android
           bun x cap sync android
 
+      - name: Wire Firebase Native Config
+        run: |
+          cp google-services.json android/app/google-services.json
+          python3 - <<'PYEOF'
+          import re
+          p = 'android/build.gradle'
+          s = open(p).read()
+          if 'com.google.gms:google-services' not in s:
+              m = re.search(r"(\n\s*classpath 'com\.android\.tools\.build:gradle:[^']+')", s)
+              if m:
+                  s = s[:m.end()] + "\n        classpath 'com.google.gms:google-services:4.4.2'" + s[m.end():]
+                  open(p, 'w').write(s)
+                  print('google-services classpath added')
+              else:
+                  print('WARNING: AGP classpath line not found')
+          p2 = 'android/app/build.gradle'
+          s2 = open(p2).read()
+          if 'com.google.gms.google-services' not in s2:
+              s2 = s2.rstrip() + "\napply plugin: 'com.google.gms.google-services'\n"
+              open(p2, 'w').write(s2)
+          print('firebase native config wired')
+          PYEOF
+
       - name: Set Native Android Version
         run: |
           sed -i -E 's/(versionCode )[0-9]+/\1'"${GITHUB_RUN_NUMBER}"'/' android/app/build.gradle

@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "635724835065",
+    "project_id": "rabta-24267",
+    "storage_bucket": "rabta-24267.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:635724835065:android:4f1194f290a6264afb1a28",
+        "android_client_info": {
+          "package_name": "com.bolochat.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "635724835065-81hpeqs1ou8j7rr1lpa1la0lvc89vesl.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBYg_yuYQDogVewRdxBMxFJidLC1p5XqSA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "635724835065-81hpeqs1ou8j7rr1lpa1la0lvc89vesl.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
