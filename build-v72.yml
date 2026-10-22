@@ -1,0 +1,547 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - name: Extract Project Files
+        run: |
+          if ls ec-b64/part1-*.b64 >/dev/null 2>&1; then cat ec-b64/part1-*.b64 | base64 -d > Easy-Chat-part-1.zip; echo "1048af8fe64fd18fbe75e2c846fbcfd119cc4e52c9911af61db481d7283e0887  Easy-Chat-part-1.zip" | sha256sum -c - || { echo "::error::Decoded source zip failed its sha256 check"; exit 1; }; fi
+          (cat Easy-Chat-part-* > combined.zip 2>/dev/null || cat Bolo-Chat-part-* > combined.zip 2>/dev/null) && unzip -o combined.zip || for f in *.zip; do echo "Trying $f"; unzip -o "$f" && break; done
+          rm -f bun.lock package-lock.json
+          ls
+
+      - name: Point SDK at repo tarball
+        run: |
+          python3 -c "
+          import json
+          p = json.load(open('package.json'))
+          p['dependencies']['@hatch/space-sdk'] = 'file:./space-sdk.tgz'
+          json.dump(p, open('package.json', 'w'), indent=2)
+          print('sdk path:', p['dependencies']['@hatch/space-sdk'])
+          "
+          ls -la space-sdk.tgz
+
+      - name: Apply New Logo
+        run: |
+          cp easy-chat-logo-new.png client/src/assets/easy-chat-logo.png
+          ls -la client/src/assets/easy-chat-logo.png
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v1
+
+      - name: Install Dependencies
+        run: bun install
+
+      - name: Add web build tools
+        run: bun add -d vite @vitejs/plugin-react @tailwindcss/vite
+
+      - name: Write Vite config
+        run: |
+          cat > client/vite.config.ts <<'VITEOF'
+          import { defineConfig } from "vite";
+          import react from "@vitejs/plugin-react";
+          import tailwindcss from "@tailwindcss/vite";
+
+          export default defineConfig({
+            plugins: [react(), tailwindcss()],
+            root: "client",
+            build: { outDir: "dist", emptyOutDir: true },
+          });
+          VITEOF
+          cat client/vite.config.ts
+
+      - name: Inject App Version
+        run: |
+          sed -i -E 's/(APP_VERSION *= *")[^"]*(")/\1'"1.0.${GITHUB_RUN_NUMBER}"'\2/' client/src/appVersion.ts || \
+          echo "export const APP_VERSION = \"1.0.${GITHUB_RUN_NUMBER}\";" > client/src/appVersion.ts
+          grep APP_VERSION client/src/appVersion.ts
+
+      - name: Build Web Assets
+        run: bun x vite build --config client/vite.config.ts
+
+      - name: Setup Capacitor
+        run: |
+          bun add @capacitor/core @capacitor/cli @capacitor/android @capacitor-community/contacts
+          bun x cap init "Easy Chat" "com.bolochat.app" --web-dir client/dist
+          bun x cap add android
+          bun x cap sync android
+
+      - name: Verify Capacitor Contacts Plugin Wiring
+        run: |
+          if ! grep -q "capacitor-community-contacts" android/capacitor.settings.gradle; then
+            echo "::error::FAIL: @capacitor-community/contacts is NOT wired into capacitor.settings.gradle - the Contacts feature would have no native plugin; refusing to ship"
+            exit 1
+          fi
+          if ! grep -q "capacitor-community-contacts" android/app/capacitor.build.gradle; then
+            echo "::error::FAIL: @capacitor-community/contacts is NOT linked in capacitor.build.gradle - the Contacts feature would have no native plugin; refusing to ship"
+            exit 1
+          fi
+          echo "Verified: Capacitor contacts plugin wired into the Android project"
+
+      - name: Install In-App Store Download Handler
+        run: |
+          cat > android/app/src/main/java/com/bolochat/app/MainActivity.java <<'JAVA_EOF'
+          package com.bolochat.app;
+
+          import android.app.DownloadManager;
+          import android.content.BroadcastReceiver;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.IntentFilter;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.os.Environment;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.webkit.CookieManager;
+          import android.webkit.URLUtil;
+          import android.webkit.WebView;
+          import android.widget.Toast;
+
+          import androidx.core.content.ContextCompat;
+
+          import com.getcapacitor.BridgeActivity;
+
+          /**
+           * Easy Chat shell with an in-app store download handler.
+           *
+           * The update fallback shows the YS Store web page inside the app (an
+           * in-app store view in the main WebView). A stock WebView silently
+           * drops file downloads, so this activity installs a DownloadListener
+           * on the WebView: when the store page starts an APK download, the
+           * system DownloadManager fetches it (progress in the notification
+           * shade), and when the download completes the file is handed to the
+           * Android system installer prompt. The user never leaves the app for
+           * a browser; the installer sheet is the only system surface.
+           */
+          public class MainActivity extends BridgeActivity {
+              private long storeDownloadId = -1L;
+              private BroadcastReceiver storeDownloadReceiver;
+
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  WebView webView = findWebView(getWindow().getDecorView());
+                  if (webView != null) {
+                      webView.setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) -> startStoreDownload(url, userAgent, contentDisposition));
+                  }
+                  storeDownloadReceiver = new BroadcastReceiver() {
+                      @Override
+                      public void onReceive(Context context, Intent intent) {
+                          long id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L);
+                          if (id != -1L && id == storeDownloadId) {
+                              openDownloadedInstaller();
+                          }
+                      }
+                  };
+                  ContextCompat.registerReceiver(this, storeDownloadReceiver, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), ContextCompat.RECEIVER_NOT_EXPORTED);
+              }
+
+              private WebView findWebView(View view) {
+                  if (view instanceof WebView) {
+                      return (WebView) view;
+                  }
+                  if (view instanceof ViewGroup) {
+                      ViewGroup group = (ViewGroup) view;
+                      for (int i = 0; i < group.getChildCount(); i++) {
+                          WebView found = findWebView(group.getChildAt(i));
+                          if (found != null) {
+                              return found;
+                          }
+                      }
+                  }
+                  return null;
+              }
+
+              private void startStoreDownload(String url, String userAgent, String contentDisposition) {
+                  try {
+                      String fileName = URLUtil.guessFileName(url, contentDisposition, "application/vnd.android.package-archive");
+                      if (fileName == null || fileName.isEmpty()) {
+                          return;
+                      }
+                      DownloadManager manager = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+                      if (manager == null) {
+                          return;
+                      }
+                      DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
+                      String cookies = CookieManager.getInstance().getCookie(url);
+                      if (cookies != null) {
+                          request.addRequestHeader("Cookie", cookies);
+                      }
+                      if (userAgent != null) {
+                          request.addRequestHeader("User-Agent", userAgent);
+                      }
+                      request.setMimeType("application/vnd.android.package-archive");
+                      request.setTitle(fileName);
+                      request.setDescription("YS Store download");
+                      request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                      request.setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS, fileName);
+                      storeDownloadId = manager.enqueue(request);
+                      Toast.makeText(this, "Downloading update...", Toast.LENGTH_SHORT).show();
+                  } catch (Exception ignored) {
+                      // A failed enqueue must never crash the app; the store
+                      // page stays on screen and the user can retry the tap.
+                  }
+              }
+
+              private void openDownloadedInstaller() {
+                  try {
+                      DownloadManager manager = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+                      if (manager == null) {
+                          return;
+                      }
+                      Uri uri = manager.getUriForDownloadedFile(storeDownloadId);
+                      if (uri == null) {
+                          return;
+                      }
+                      Intent intent = new Intent(Intent.ACTION_VIEW);
+                      intent.setDataAndType(uri, "application/vnd.android.package-archive");
+                      intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                      intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                      startActivity(intent);
+                  } catch (Exception ignored) {
+                      // The downloaded file also sits in the notification shade;
+                      // a tap there installs it if this hand-off was blocked.
+                  }
+              }
+
+              @Override
+              public void onDestroy() {
+                  if (storeDownloadReceiver != null) {
+                      try {
+                          unregisterReceiver(storeDownloadReceiver);
+                      } catch (Exception ignored) {
+                      }
+                      storeDownloadReceiver = null;
+                  }
+                  super.onDestroy();
+              }
+          }
+          JAVA_EOF
+          grep -q "setDownloadListener" android/app/src/main/java/com/bolochat/app/MainActivity.java || { echo "::error::MainActivity download handler missing after write"; exit 1; }
+          echo "MainActivity in-app store download handler installed"
+
+      - name: Wire Firebase Native Config
+        run: |
+          cp google-services.json android/app/google-services.json
+          python3 - <<'PYEOF'
+          import re
+          p = 'android/build.gradle'
+          s = open(p).read()
+          if 'com.google.gms:google-services' not in s:
+              m = re.search(r"(\n\s*classpath 'com\.android\.tools\.build:gradle:[^']+')", s)
+              if m:
+                  s = s[:m.end()] + "\n        classpath 'com.google.gms:google-services:4.4.2'" + s[m.end():]
+                  open(p, 'w').write(s)
+                  print('google-services classpath added')
+              else:
+                  print('WARNING: AGP classpath line not found')
+          p2 = 'android/app/build.gradle'
+          s2 = open(p2).read()
+          if 'com.google.gms.google-services' not in s2:
+              s2 = s2.rstrip() + "\napply plugin: 'com.google.gms.google-services'\n"
+              open(p2, 'w').write(s2)
+          print('firebase native config wired')
+          PYEOF
+
+      - name: Set Firebase Auth Providers
+        run: |
+          python3 - <<'PYEOF'
+          import json
+          p = 'android/app/src/main/assets/capacitor.config.json'
+          with open(p) as f:
+              cfg = json.load(f)
+          plugins = cfg.setdefault('plugins', {})
+          fa = plugins.setdefault('FirebaseAuthentication', {})
+          fa['providers'] = ['google.com']
+          with open(p, 'w') as f:
+              json.dump(cfg, f, indent=2)
+          print('FirebaseAuthentication providers:', fa['providers'])
+          PYEOF
+      - name: Add R8 Rules For Auth Plugin
+        run: |
+          cat >> android/app/proguard-rules.pro <<'RULESEOF'
+          -dontwarn com.facebook.**
+          RULESEOF
+          cat android/app/proguard-rules.pro
+
+      - name: Set Native Android Version
+        run: |
+          sed -i -E 's/(versionCode )[0-9]+/\1'"${GITHUB_RUN_NUMBER}"'/' android/app/build.gradle
+          sed -i -E 's/(versionName )"[^"]*"/\1"1.0.'"${GITHUB_RUN_NUMBER}"'"/' android/app/build.gradle
+          grep -E "versionCode|versionName" android/app/build.gradle | head -4
+
+      - name: Configure Stable Signing
+        run: |
+          python3 - <<'PYEOF'
+          import re
+          p = 'android/app/build.gradle'
+          s = open(p).read()
+          debug_extra = (
+              '\n            signingConfig signingConfigs.debug'
+              '\n            minifyEnabled true'
+              '\n            shrinkResources true'
+              '\n            proguardFiles getDefaultProguardFile(\'proguard-android-optimize.txt\'), \'proguard-rules.pro\''
+          )
+          if 'signingConfigs' not in s:
+              s2, n = re.subn(r'(?m)^(android \{\s*)$',
+                  '\\1\n    signingConfigs {\n        debug {\n            storeFile file(System.getenv("GITHUB_WORKSPACE") + "/debug.keystore")\n            storePassword "android"\n            keyAlias "androiddebugkey"\n            keyPassword "android"\n        }\n    }',
+                  s, count=1)
+              if n == 1:
+                  s = s2
+                  print('signingConfigs inserted')
+              m = re.search(r'buildTypes\s*\{', s)
+              if m:
+                  rest = s[m.end():]
+                  dm = re.search(r'debug\s*\{', rest)
+                  if dm:
+                      pos = m.end() + dm.end()
+                      s = s[:pos] + debug_extra + s[pos:]
+                      print('debug buildType wired')
+                  else:
+                      pos = m.end()
+                      s = s[:pos] + '\n        debug {' + debug_extra + '\n        }' + s[pos:]
+                      print('debug buildType created')
+              open(p, 'w').write(s)
+          else:
+              print('signing already configured')
+          PYEOF
+          grep -B1 -A8 "signingConfigs" android/app/build.gradle | head -20
+
+      - name: Add Android Permissions
+        run: |
+          python3 - <<'PYEOF'
+          import re
+          p = 'android/app/src/main/AndroidManifest.xml'
+          s = open(p).read()
+          changed = False
+          insert = (
+              '\n'
+              '    <uses-permission android:name="android.permission.RECORD_AUDIO" />\n'
+              '    <uses-permission android:name="android.permission.CAMERA" />\n'
+              '    <uses-permission android:name="android.permission.READ_CONTACTS" />\n'
+              '    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n'
+              '    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />\n'
+              '    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n'
+              '    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />\n'
+          )
+          if 'android.permission.RECORD_AUDIO' not in s:
+              s = re.sub(r'(<manifest[^>]*>)', lambda m: m.group(1) + insert, s, count=1)
+              changed = True
+              print('permissions added')
+          else:
+              print('permissions already present')
+          if 'android:usesCleartextTraffic' not in s:
+              s = re.sub(r'(<application\b[^>]*)>', r'\1 android:usesCleartextTraffic="false">', s, count=1)
+              changed = True
+              print('cleartext traffic disabled')
+          else:
+              print('cleartext traffic already configured')
+          if changed:
+              open(p, 'w').write(s)
+          PYEOF
+          grep "uses-permission" android/app/src/main/AndroidManifest.xml
+
+      - name: Declare Easy Chat Auth Deep Link In Manifest
+        run: |
+          python3 - <<'PYEOF'
+          import re, sys
+          p = 'android/app/src/main/AndroidManifest.xml'
+          s = open(p, encoding='utf-8').read()
+          if 'android:scheme="easychat"' in s:
+              print('easychat deep link already declared')
+          else:
+              m = re.search(r'<activity\b[^>]*android:name="\.MainActivity"[\s\S]*?</activity>', s)
+              if not m:
+                  print('::error::FAIL: MainActivity <activity> block not found in AndroidManifest.xml')
+                  sys.exit(1)
+              block = m.group(0)
+              line_start = s.rfind('\n', 0, m.start()) + 1
+              indent = re.match(r'[ \t]*', s[line_start:m.start()]).group(0) + '    '
+              intent_filter = (
+                  indent + '<intent-filter>\n'
+                  + indent + '    <action android:name="android.intent.action.VIEW" />\n'
+                  + indent + '    <category android:name="android.intent.category.DEFAULT" />\n'
+                  + indent + '    <category android:name="android.intent.category.BROWSABLE" />\n'
+                  + indent + '    <data android:scheme="easychat" android:host="auth" android:path="/finish" />\n'
+                  + indent + '</intent-filter>\n'
+                  + indent[:-4]
+              )
+              new_block = block[:-len('</activity>')] + intent_filter + '</activity>'
+              s = s[:m.start()] + new_block + s[m.end():]
+              open(p, 'w', encoding='utf-8').write(s)
+              print('easychat://auth/finish intent-filter inserted into MainActivity')
+          PYEOF
+          grep -A5 'easychat' android/app/src/main/AndroidManifest.xml
+
+      - name: Verify Contacts Permission And Auth Deep Link In Manifest
+        run: |
+          if ! grep -q 'android.permission.READ_CONTACTS' android/app/src/main/AndroidManifest.xml; then
+            echo "::error::FAIL: READ_CONTACTS NOT declared in AndroidManifest.xml - the Contacts feature would be denied at runtime; refusing to ship"
+            exit 1
+          fi
+          python3 - <<'PYEOF'
+          import re, sys
+          s = open('android/app/src/main/AndroidManifest.xml', encoding='utf-8').read()
+          m = re.search(r'<activity\b[^>]*android:name="\.MainActivity"[\s\S]*?</activity>', s)
+          block = m.group(0) if m else ''
+          missing = [t for t in ('android:scheme="easychat"', 'android:host="auth"', 'android:path="/finish"') if t not in block]
+          if missing:
+              print('::error::FAIL: easychat://auth/finish intent-filter incomplete inside MainActivity - missing: ' + ', '.join(missing) + '; refusing to ship')
+              sys.exit(1)
+          print('Verified: easychat://auth/finish intent-filter declared inside MainActivity')
+          PYEOF
+          echo "Verified: READ_CONTACTS declared in AndroidManifest.xml"
+
+      - name: Declare YS Store Queries In Manifest
+        run: |
+          python3 - <<'PYEOF'
+          import re
+          p = 'android/app/src/main/AndroidManifest.xml'
+          s = open(p, encoding='utf-8').read()
+          if 'android:scheme="ysstore"' in s:
+              print('ysstore intent already present')
+          else:
+              def make_intent(base):
+                  return (base + '<intent>\n'
+                      + base + '    <action android:name="android.intent.action.VIEW" />\n'
+                      + base + '    <data android:scheme="ysstore" />\n'
+                      + base + '</intent>\n')
+              m = re.search(r'^([ \t]*)</queries>', s, flags=re.M)
+              if m:
+                  base = m.group(1) + '    '
+                  s = s[:m.start()] + make_intent(base) + m.group(1) + '</queries>' + s[m.end():]
+                  print('merged ysstore intent into existing queries')
+              else:
+                  m2 = re.search(r'^([ \t]*)</manifest>', s, flags=re.M)
+                  base = m2.group(1) + '    '
+                  block = base + '<queries>\n' + make_intent(base + '    ') + base + '</queries>\n'
+                  s = s[:m2.start()] + block + s[m2.start():]
+                  print('inserted ysstore queries block')
+              open(p, 'w', encoding='utf-8').write(s)
+          PYEOF
+          grep -A6 '<queries' android/app/src/main/AndroidManifest.xml
+
+      - name: Verify YS Store Queries In Manifest
+        run: |
+          QUERIES_SECTION=$(sed -n '/<queries/,/<\/queries>/p' android/app/src/main/AndroidManifest.xml)
+          if ! printf '%s\n' "$QUERIES_SECTION" | grep -q 'android:scheme="ysstore"'; then
+            echo "::error::FAIL: ysstore scheme NOT declared inside <queries> - refusing to ship"
+            exit 1
+          fi
+          echo "Verified: ysstore scheme declared inside <queries>"
+
+      - name: Set App Launcher Icon
+        run: |
+          pip install pillow -q
+          python3 - <<'PYEOF'
+          from PIL import Image
+          import os
+          src = Image.open('easy-chat-logo-new.png').convert('RGBA')
+          w, h = src.size
+          bg = src.getpixel((w // 2, int(h * 0.08)))[:3]
+          sizes = {'mipmap-mdpi':48, 'mipmap-hdpi':72, 'mipmap-xhdpi':96, 'mipmap-xxhdpi':144, 'mipmap-xxxhdpi':192}
+          for d, size in sizes.items():
+              path = f'android/app/src/main/res/{d}'
+              os.makedirs(path, exist_ok=True)
+              canvas = Image.new('RGBA', (size, size), bg + (255,))
+              inner = int(size * 0.80)
+              logo = src.resize((inner, inner), Image.LANCZOS)
+              off = (size - inner) // 2
+              canvas.paste(logo, (off, off), logo)
+              canvas.save(f'{path}/ic_launcher.png')
+              canvas.save(f'{path}/ic_launcher_round.png')
+              canvas.save(f'{path}/ic_launcher_foreground.png')
+          print('launcher icons set from new logo (fitted with margin)')
+          PYEOF
+
+      - name: Ensure Stable Debug Keystore
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ ! -f debug.keystore ]; then
+            echo "debug.keystore not found, generating a new one..."
+            keytool -genkey -v -keystore debug.keystore -alias androiddebugkey -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add debug.keystore
+            git commit -m "Add stable debug keystore for consistent APK signing"
+            git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+            git push origin HEAD:main
+          else
+            echo "debug.keystore already exists, skipping generation"
+          fi
+          mkdir -p ~/.android
+          cp debug.keystore ~/.android/debug.keystore
+          echo "Keystore SHA256:"
+          keytool -list -v -keystore debug.keystore -storepass android 2>/dev/null | grep -E "SHA256|Alias"
+
+      - name: Build Debug APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+          cd "$GITHUB_WORKSPACE"
+          echo "APK signature check:"
+          APKSIGNER=$(find "$ANDROID_HOME" "$HOME/Android" /opt/android* /usr/local -name apksigner 2>/dev/null | head -1)
+          if [ -z "$APKSIGNER" ]; then echo "apksigner not found"; exit 1; fi
+          "$APKSIGNER" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk | grep -E "SHA-256|certificate DN"
+          ACTUAL=$("$APKSIGNER" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk | grep "SHA-256" | head -1 | sed 's/.*digest: //' | tr -d ':' | tr 'a-z' 'A-Z')
+          EXPECTED=$(keytool -list -v -keystore debug.keystore -storepass android 2>/dev/null | grep "SHA256" | head -1 | sed 's/.*SHA256: //' | tr -d ':' | tr 'a-z' 'A-Z')
+          echo "APK cert: $ACTUAL"
+          echo "Keystore: $EXPECTED"
+          [ -n "$ACTUAL" ] && [ "$ACTUAL" = "$EXPECTED" ] || { echo "FATAL: APK signature does not match committed keystore"; exit 1; }
+          echo "signature check passed"
+
+      - name: Verify Native Version
+        run: |
+          AAPT=$(find "$ANDROID_HOME" "$HOME/Android" /opt/android* /usr/local -name aapt 2>/dev/null | head -1)
+          if [ -z "$AAPT" ]; then echo "aapt not found"; exit 1; fi
+          INFO=$($AAPT dump badging android/app/build/outputs/apk/debug/app-debug.apk | head -1)
+          echo "$INFO"
+          CODE=$(echo "$INFO" | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p")
+          VNAME=$(echo "$INFO" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")
+          echo "versionCode=$CODE versionName=$VNAME expected run=${{ github.run_number }}"
+          [ "$CODE" = "${{ github.run_number }}" ] || { echo "FATAL: versionCode mismatch"; exit 1; }
+          [ "$VNAME" = "1.0.${{ github.run_number }}" ] || { echo "FATAL: versionName mismatch"; exit 1; }
+          echo "version check passed"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: easy-chat-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk "Easy-Chat-v1.0.${{ github.run_number }}.apk"
+          gh release create "v1.0.${{ github.run_number }}" \
+            --title "Easy Chat v1.0.${{ github.run_number }}" \
+            --notes "Easy Chat APK" \
+            android/app/build/outputs/apk/debug/app-debug.apk \
+            "Easy-Chat-v1.0.${{ github.run_number }}.apk"
