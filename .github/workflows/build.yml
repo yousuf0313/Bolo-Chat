@@ -28,7 +28,7 @@ jobs:
 
       - name: Extract Project Files
         run: |
-          if ls ec-b64/part1-*.b64 >/dev/null 2>&1; then cat ec-b64/part1-*.b64 | base64 -d > Easy-Chat-part-1.zip; echo "02d686d6b3937ae994efd8479c3dd5a58e35a2f71cffaeb977d4ef88acd12dfb  Easy-Chat-part-1.zip" | sha256sum -c - || { echo "::error::Decoded source zip failed its sha256 check"; exit 1; }; fi
+          if ls ec-b64/part1-*.b64 >/dev/null 2>&1; then cat ec-b64/part1-*.b64 | base64 -d > Easy-Chat-part-1.zip; echo "1048af8fe64fd18fbe75e2c846fbcfd119cc4e52c9911af61db481d7283e0887  Easy-Chat-part-1.zip" | sha256sum -c - || { echo "::error::Decoded source zip failed its sha256 check"; exit 1; }; fi
           (cat Easy-Chat-part-* > combined.zip 2>/dev/null || cat Bolo-Chat-part-* > combined.zip 2>/dev/null) && unzip -o combined.zip || for f in *.zip; do echo "Trying $f"; unzip -o "$f" && break; done
           rm -f bun.lock package-lock.json
           ls
@@ -84,10 +84,22 @@ jobs:
 
       - name: Setup Capacitor
         run: |
-          bun add @capacitor/core @capacitor/cli @capacitor/android
+          bun add @capacitor/core @capacitor/cli @capacitor/android @capacitor-community/contacts
           bun x cap init "Easy Chat" "com.bolochat.app" --web-dir client/dist
           bun x cap add android
           bun x cap sync android
+
+      - name: Verify Capacitor Contacts Plugin Wiring
+        run: |
+          if ! grep -q "capacitor-community-contacts" android/capacitor.settings.gradle; then
+            echo "::error::FAIL: @capacitor-community/contacts is NOT wired into capacitor.settings.gradle - the Contacts feature would have no native plugin; refusing to ship"
+            exit 1
+          fi
+          if ! grep -q "capacitor-community-contacts" android/app/capacitor.build.gradle; then
+            echo "::error::FAIL: @capacitor-community/contacts is NOT linked in capacitor.build.gradle - the Contacts feature would have no native plugin; refusing to ship"
+            exit 1
+          fi
+          echo "Verified: Capacitor contacts plugin wired into the Android project"
 
       - name: Install In-App Store Download Handler
         run: |
@@ -330,6 +342,7 @@ jobs:
               '\n'
               '    <uses-permission android:name="android.permission.RECORD_AUDIO" />\n'
               '    <uses-permission android:name="android.permission.CAMERA" />\n'
+              '    <uses-permission android:name="android.permission.READ_CONTACTS" />\n'
               '    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n'
               '    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />\n'
               '    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n'
@@ -351,6 +364,57 @@ jobs:
               open(p, 'w').write(s)
           PYEOF
           grep "uses-permission" android/app/src/main/AndroidManifest.xml
+
+      - name: Declare Easy Chat Auth Deep Link In Manifest
+        run: |
+          python3 - <<'PYEOF'
+          import re, sys
+          p = 'android/app/src/main/AndroidManifest.xml'
+          s = open(p, encoding='utf-8').read()
+          if 'android:scheme="easychat"' in s:
+              print('easychat deep link already declared')
+          else:
+              m = re.search(r'<activity\b[^>]*android:name="\.MainActivity"[\s\S]*?</activity>', s)
+              if not m:
+                  print('::error::FAIL: MainActivity <activity> block not found in AndroidManifest.xml')
+                  sys.exit(1)
+              block = m.group(0)
+              line_start = s.rfind('\n', 0, m.start()) + 1
+              indent = re.match(r'[ \t]*', s[line_start:m.start()]).group(0) + '    '
+              intent_filter = (
+                  indent + '<intent-filter>\n'
+                  + indent + '    <action android:name="android.intent.action.VIEW" />\n'
+                  + indent + '    <category android:name="android.intent.category.DEFAULT" />\n'
+                  + indent + '    <category android:name="android.intent.category.BROWSABLE" />\n'
+                  + indent + '    <data android:scheme="easychat" android:host="auth" android:path="/finish" />\n'
+                  + indent + '</intent-filter>\n'
+                  + indent[:-4]
+              )
+              new_block = block[:-len('</activity>')] + intent_filter + '</activity>'
+              s = s[:m.start()] + new_block + s[m.end():]
+              open(p, 'w', encoding='utf-8').write(s)
+              print('easychat://auth/finish intent-filter inserted into MainActivity')
+          PYEOF
+          grep -A5 'easychat' android/app/src/main/AndroidManifest.xml
+
+      - name: Verify Contacts Permission And Auth Deep Link In Manifest
+        run: |
+          if ! grep -q 'android.permission.READ_CONTACTS' android/app/src/main/AndroidManifest.xml; then
+            echo "::error::FAIL: READ_CONTACTS NOT declared in AndroidManifest.xml - the Contacts feature would be denied at runtime; refusing to ship"
+            exit 1
+          fi
+          python3 - <<'PYEOF'
+          import re, sys
+          s = open('android/app/src/main/AndroidManifest.xml', encoding='utf-8').read()
+          m = re.search(r'<activity\b[^>]*android:name="\.MainActivity"[\s\S]*?</activity>', s)
+          block = m.group(0) if m else ''
+          missing = [t for t in ('android:scheme="easychat"', 'android:host="auth"', 'android:path="/finish"') if t not in block]
+          if missing:
+              print('::error::FAIL: easychat://auth/finish intent-filter incomplete inside MainActivity - missing: ' + ', '.join(missing) + '; refusing to ship')
+              sys.exit(1)
+          print('Verified: easychat://auth/finish intent-filter declared inside MainActivity')
+          PYEOF
+          echo "Verified: READ_CONTACTS declared in AndroidManifest.xml"
 
       - name: Declare YS Store Queries In Manifest
         run: |
